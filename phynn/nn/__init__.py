@@ -1,5 +1,6 @@
-from phynn.nn.autoencoder import AutoEncoder, AutoEncoderBuilder, VariationalAutoEncoder
-from phynn.nn.conv import ConvInitParams, ConvBlockParams, Conv
-from phynn.nn.fc import FCInitParams, FCBlockParams, FC
-from phynn.nn.resnet import ResBlockParams, ResNet, ResBlock
-from phynn.nn.unet import UNet
+from phynn.nn.autoencoder import AutoEncoder, AutoEncoderCreator, VariationalAutoEncoder
+from phynn.nn.base import get_factory
+from phynn.nn.conv import Conv, ConvBlockParams
+from phynn.nn.fc import FC
+from phynn.nn.resnet import ResBlock, ResBlockParams, ResNet
+from phynn.nn.unet import UNet, UNetLevelParams

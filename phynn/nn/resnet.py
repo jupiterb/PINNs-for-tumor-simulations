@@ -4,16 +4,13 @@ import torch.nn as nn
 from dataclasses import dataclass
 from typing import Generic
 
-from phynn.nn.base import NNInitParams, NNBlockParams, NNBuilder
-
-
-@dataclass
-class ResBlockParams(Generic[NNBlockParams]):
-    params: NNBlockParams
-    size: int
-
-
-MaybeResBlockParams = ResBlockParams[NNBlockParams] | NNBlockParams
+from phynn.nn.base import (
+    SequentialNetCreator,
+    SequentialNetParams,
+    SpaceParams,
+    BlockParams,
+    get_factory,
+)
 
 
 class ResBlock(nn.Module):
@@ -25,48 +22,47 @@ class ResBlock(nn.Module):
         return self._block(x) + x
 
 
-class ResNet(NNBuilder[NNInitParams, MaybeResBlockParams[NNBlockParams]]):
-    def __init__(self, nn_builder: NNBuilder[NNInitParams, NNBlockParams]) -> None:
-        self._builder = nn_builder
+@dataclass
+class ResBlockParams(Generic[BlockParams]):
+    params: BlockParams
+    size: int
 
-    def init(
-        self, params: NNInitParams
-    ) -> NNBuilder[NNInitParams, MaybeResBlockParams[NNBlockParams]]:
-        self._builder.init(params)
-        self._block_params = []
-        return self
 
-    def prepend(
-        self, params: MaybeResBlockParams[NNBlockParams]
-    ) -> NNBuilder[NNInitParams, MaybeResBlockParams[NNBlockParams]]:
-        self._block_params = [params] + self._block_params
-        return self
+MaybeResBlockParams = ResBlockParams[BlockParams] | BlockParams
 
-    def append(
-        self, params: MaybeResBlockParams[NNBlockParams]
-    ) -> NNBuilder[NNInitParams, MaybeResBlockParams[NNBlockParams]]:
-        self._block_params.append(params)
-        return self
 
-    def reset(
-        self, keep_end: bool
-    ) -> NNBuilder[NNInitParams, MaybeResBlockParams[NNBlockParams]]:
-        self._builder = self._builder.reset(keep_end)
-        return self
+class ResNet(SequentialNetCreator[SpaceParams, MaybeResBlockParams[BlockParams]]):
+    def __init__(
+        self, net_creator: SequentialNetCreator[SpaceParams, BlockParams]
+    ) -> None:
+        self._net_creator = net_creator
 
-    def build(self) -> nn.Sequential:
+    def create(
+        self,
+        params: SequentialNetParams[SpaceParams, MaybeResBlockParams[BlockParams]],
+    ) -> nn.Module:
         resnet = nn.Sequential()
+        in_space = params.in_space
 
-        for params in self._block_params:
-            resnet.append(self._create_block(params))
-            self._builder.reset(keep_end=True)
+        for out_space, block_params in params:
+            block = self._create_block(in_space, out_space, block_params)
+            resnet.append(block)
 
         return resnet
 
-    def _create_block(self, params: MaybeResBlockParams[NNBlockParams]) -> nn.Module:
-        if isinstance(params, ResBlockParams):
-            for _ in range(params.size):
-                self._builder.append(params.params)
-            return ResBlock(self._builder.build())
+    def _create_block(
+        self,
+        in_space: SpaceParams,
+        out_space: SpaceParams,
+        block_params: MaybeResBlockParams[BlockParams],
+    ) -> nn.Module:
+        factory = get_factory(self._net_creator)
+        params = factory.init(in_space)
+
+        if isinstance(block_params, ResBlockParams):
+            for _ in range(block_params.size):
+                params += factory.layer(out_space, block_params.params)
+            return ResBlock(self._net_creator.create(params))
         else:
-            return self._builder.append(params).build()
+            params += factory.layer(out_space, block_params)
+            return self._net_creator.create(params)

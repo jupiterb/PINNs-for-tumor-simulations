@@ -4,9 +4,15 @@ import torch as th
 import torch.nn as nn
 
 from dataclasses import dataclass
-from typing import Generic
+from typing import Generic, Iterator
 
-from phynn.nn.base import NNInitParams, NNBlockParams, NNBuilder
+from phynn.nn.base import (
+    SequentialNetCreator,
+    SequentialNetParams,
+    SpaceParams,
+    BlockParams,
+    get_factory,
+)
 
 
 class UNetLevel(nn.Module):
@@ -26,78 +32,72 @@ class UNetLevel(nn.Module):
 
 
 @dataclass
-class _UNetLevelParams(Generic[NNBlockParams]):
-    encoder_params: NNBlockParams
-    decoder_params: NNBlockParams
+class UNetLevelParams(Generic[SpaceParams, BlockParams]):
+    concat_space_params: SpaceParams
+    block_params: BlockParams
 
 
-class UNet(Generic[NNInitParams, NNBlockParams]):
+MaybeUNetLevelParams = UNetLevelParams[SpaceParams, BlockParams] | BlockParams
+
+
+class UNet(
+    SequentialNetCreator[SpaceParams, MaybeUNetLevelParams[SpaceParams, BlockParams]]
+):
     def __init__(
         self,
-        encoder_builder: NNBuilder[NNInitParams, NNBlockParams],
-        decoder_builder: NNBuilder[NNInitParams, NNBlockParams],
+        encoder_creator: SequentialNetCreator[SpaceParams, BlockParams],
+        decoder_creator: SequentialNetCreator[SpaceParams, BlockParams],
     ) -> None:
-        super().__init__()
-        self._encoder_builder = encoder_builder
-        self._decoder_builder = decoder_builder
+        self._encoder_creator = encoder_creator
+        self._decoder_creator = decoder_creator
 
-    def init(self, params: NNInitParams) -> UNet[NNInitParams, NNBlockParams]:
-        self._encoder_builder.init(params)
-        self._decoder_builder.init(params)
-        self._level_params: list[list[_UNetLevelParams[NNBlockParams]]] = [[]]
-        return self
+    def create(
+        self,
+        params: SequentialNetParams[
+            SpaceParams, MaybeUNetLevelParams[SpaceParams, BlockParams]
+        ],
+    ) -> nn.Module:
+        return self._create_level(params.in_space, params.__iter__())
 
-    def add_symmetrical_blocks(
-        self, params: NNBlockParams
-    ) -> UNet[NNInitParams, NNBlockParams]:
-        self._level_params[-1].append(_UNetLevelParams(params, params))
-        return self
+    def _create_level(
+        self,
+        in_space: SpaceParams,
+        params_iter: Iterator[
+            tuple[SpaceParams, MaybeUNetLevelParams[SpaceParams, BlockParams]]
+        ],
+    ) -> nn.Module:
+        factory = get_factory(self._encoder_creator)
+        encoder_params = factory.init(in_space)
+        decoder_params = factory.init(in_space)
+        sublevel = None
 
-    def split_level(
-        self, encoder_params: NNBlockParams, concat_decoder_params: NNBlockParams
-    ) -> UNet[NNInitParams, NNBlockParams]:
-        level_params = _UNetLevelParams(encoder_params, concat_decoder_params)
-        self._level_params[-1].append(level_params)
-        self._level_params.append([])
-        return self
+        while True:
+            try:
+                out_space, unet_block_params = next(params_iter)
 
-    def build(self) -> nn.Module:
-        level_params = self._level_params.pop(0)
+                match unet_block_params:
+                    case UNetLevelParams(concat_space_params, block_params):
+                        encoder_params += factory.layer(out_space, block_params)
+                        decoder_params = (
+                            factory.layer(concat_space_params, block_params)
+                            + decoder_params
+                        )
+                        sublevel = self._create_level(concat_space_params, params_iter)
+                    case block_params:
+                        encoder_params += factory.layer(out_space, block_params)
+                        decoder_params = (
+                            factory.layer(out_space, block_params) + decoder_params
+                        )
 
-        if len(self._level_params) == 0:
-            return self._build_bridge(level_params)
+                in_space = out_space
+
+            except StopIteration:
+                break
+
+        encoder = self._encoder_creator.create(encoder_params)
+        decoder = self._decoder_creator.create(decoder_params)
+
+        if sublevel is None:
+            return nn.Sequential(encoder, decoder)
         else:
-            return self._build_unet_level(level_params)
-
-    def _build_bridge(self, level_params: list[_UNetLevelParams]) -> nn.Module:
-        for params in level_params:
-            self._encoder_builder.append(params.encoder_params)
-            self._decoder_builder.prepend(params.decoder_params)
-
-        encoder = self._encoder_builder.build()
-        decoder = self._decoder_builder.build()
-
-        return encoder + decoder
-
-    def _build_unet_level(self, level_params: list[_UNetLevelParams]) -> nn.Module:
-        for params in level_params[:-1]:
-            self._encoder_builder.append(params.encoder_params)
-            self._decoder_builder.prepend(params.decoder_params)
-
-        self._encoder_builder.append(level_params[-1].encoder_params)
-        encoder = self._encoder_builder.build()
-
-        decoder_after_concat = self._decoder_builder.build()
-        self._decoder_builder.reset(False)
-
-        self._decoder_builder.prepend(level_params[-1].decoder_params)
-        concat_decoder = self._decoder_builder.build()
-
-        decoder = concat_decoder + decoder_after_concat
-
-        self._encoder_builder.reset(True)
-        self._decoder_builder.reset(True)
-
-        sublevel = self.build()
-
-        return UNetLevel(encoder, decoder, sublevel)
+            return UNetLevel(encoder, decoder, sublevel)

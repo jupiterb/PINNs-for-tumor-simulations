@@ -1,4 +1,5 @@
 import torch.optim as optim
+import torch.nn as nn
 
 from pathlib import Path
 
@@ -11,13 +12,11 @@ from phynn.data.img import (
 from phynn.models import VAEModel, OptimizerParams
 from phynn.nn import (
     VariationalAutoEncoder,
-    AutoEncoderBuilder,
+    AutoEncoderCreator,
     Conv,
-    ConvInitParams,
     ConvBlockParams,
     FC,
-    FCInitParams,
-    FCBlockParams,
+    get_factory,
 )
 from phynn.train import train, training_device
 
@@ -36,28 +35,32 @@ def create_vae() -> VariationalAutoEncoder:
     in_shape = (1, 120, 120)
     latent_size = 64
 
-    conv_encoder_builder = Conv()
-    conv_decoder_builder = Conv(transpose=True, upsample=True, rescale_on_begin=True)
+    conv_encoder_creator = Conv()
+    conv_decoder_creator = Conv(transpose=True, upsample=True, rescale_on_begin=True)
 
-    conv_ae = (
-        AutoEncoderBuilder(conv_encoder_builder, conv_decoder_builder)
-        .init(in_shape, ConvInitParams(1))
-        .add_block(ConvBlockParams(32, 3, rescale=3))
-        .add_block(ConvBlockParams(32, 3))
-        .add_block(ConvBlockParams(64, 3, rescale=2))
-        .add_block(ConvBlockParams(64, 3))
-        .add_block(ConvBlockParams(96, 3, rescale=2))
-        .build()
+    conv_ae_creator = AutoEncoderCreator(
+        in_shape, conv_encoder_creator, conv_decoder_creator
+    )
+    conv_ae_factory = get_factory(conv_ae_creator)
+
+    conv_ae = conv_ae_creator.create(
+        conv_ae_factory.init(1)
+        + conv_ae_factory.layer(32, ConvBlockParams(rescale=2))
+        + conv_ae_factory.layer(32, ConvBlockParams())
+        + conv_ae_factory.layer(64, ConvBlockParams(rescale=2))
+        + conv_ae_factory.layer(64, ConvBlockParams())
+        + conv_ae_factory.layer(96, ConvBlockParams(rescale=2))
     )
 
     fc_input_size = 96 * 10 * 10
 
-    fc_ae = (
-        AutoEncoderBuilder(FC(), FC())
-        .init((fc_input_size,), FCInitParams(fc_input_size))
-        .add_block(FCBlockParams(1024))
-        .add_block(FCBlockParams(256))
-        .build()
+    fc_ae_creator = AutoEncoderCreator((fc_input_size,), FC(), FC())
+    fc_ae_factory = get_factory(fc_ae_creator)
+
+    fc_ae = fc_ae_creator.create(
+        fc_ae_factory.init(fc_input_size)
+        + fc_ae_factory.layer(1024, nn.LeakyReLU)
+        + fc_ae_factory.layer(256, nn.LeakyReLU)
     )
 
     ae = conv_ae.flatten().add_inner(fc_ae)
