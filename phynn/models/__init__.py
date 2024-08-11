@@ -1,6 +1,6 @@
 from phynn.models.base import BaseModel, OptimizerParams
 from phynn.models.diff import (
-    DiffEquationModel,
+    GeneralDiffEquationModel,
     ForwardProblemDiffEquationModel,
     InverseProblemDiffEquationModel,
 )

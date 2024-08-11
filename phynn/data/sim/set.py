@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 from typing import Callable, Sequence
 
 from phynn.data.img.interface import ImagesDataInterface
-from phynn.diff import DiffEquation, simulate
+from phynn.physics import ParametrizedEquation, EquationSimulation
 
 
 SimulationDataSample = tuple[
@@ -18,7 +18,7 @@ class DynamicSimulationDataset(Dataset):
     def __init__(
         self,
         initial_conditions: ImagesDataInterface,
-        diff_eq: DiffEquation,
+        diff_eq: ParametrizedEquation,
         params_provider: Callable[[int], th.Tensor],
         max_simulation_steps: int,
         min_simulation_steps: int = 1,
@@ -26,7 +26,7 @@ class DynamicSimulationDataset(Dataset):
     ) -> None:
         super().__init__()
         self._ics = initial_conditions
-        self._diff = diff_eq
+        self._simulation = EquationSimulation(diff_eq)
         self._params = params_provider
         self._max_sim_steps = max_simulation_steps
         self._min_sim_steps = min_simulation_steps
@@ -49,8 +49,8 @@ class DynamicSimulationDataset(Dataset):
         )
 
         with th.no_grad():
-            starts = simulate(self._diff, ics, params, pre_steps)
-            results = simulate(self._diff, starts, params, sim_steps)
+            starts = self._simulation(ics, params, pre_steps)
+            results = self._simulation(starts, params, sim_steps)
 
         return [
             (starts[i], results[i], params[i], sim_steps[i]) for i in range(batch_size)

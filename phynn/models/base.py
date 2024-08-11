@@ -1,7 +1,11 @@
+import lightning as L
+from lightning.pytorch.loggers import WandbLogger
+import torch as th
+from torch import optim
+from torchvision.utils import make_grid
+
 from dataclasses import dataclass
 
-import lightning as L
-from torch import optim
 from typing import Type
 
 
@@ -23,3 +27,9 @@ class BaseModel(L.LightningModule):
             self.parameters(), lr=self._optimizer_params.lr
         )
         return optimizer
+
+    def _log_visualize(self, key: str, tensors: dict[str, th.Tensor]) -> None:
+        if isinstance(self.logger, WandbLogger):
+            grids = [make_grid(t, 1) for t in tensors.values()]
+            names = [n for n in tensors]
+            self.logger.log_image(key, grids, caption=names)

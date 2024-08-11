@@ -2,8 +2,8 @@ import torch.nn as nn
 import torch.optim as optim
 
 from phynn.data.sim import DynamicSimulationDataset
-from phynn.diff import DiffEquation
-from phynn.models import DiffEquationModel, OptimizerParams
+from phynn.physics import ParametrizedEquation, EquationSimulation
+from phynn.models import GeneralDiffEquationModel, OptimizerParams
 from phynn.train import train
 
 
@@ -16,10 +16,10 @@ def run_training(
     epochs: int,
     lr: float = 0.00005,
 ) -> None:
-    diff_eq_nn = DiffEquation(diff_eq_components_net, 2)
-
-    diff_eq_model = DiffEquationModel(
-        diff_eq_nn, optimizer_params=OptimizerParams(optim.AdamW, lr)
+    diff_eq_nn = ParametrizedEquation(diff_eq_components_net)
+    diff_simulation = EquationSimulation(diff_eq_nn)
+    diff_eq_model = GeneralDiffEquationModel(
+        diff_simulation, optimizer_params=OptimizerParams(optim.AdamW, lr)
     )
 
     train(

@@ -12,8 +12,8 @@ from phynn.data.img import (
     train_test_split,
 )
 from phynn.data.sim import DynamicSimulationDataset
-from phynn.diff import DiffEquationComponents, DiffEquation
-from phynn.diff.terms import DiffusionTerm, ProliferationTerm
+from phynn.physics import EquationComponents, ParametrizedEquation
+from phynn.physics.terms import DiffusionTerm, ProliferationTerm
 from phynn.train import training_device
 
 
@@ -39,12 +39,12 @@ def get_data() -> tuple[ImagesDataInterface, ImagesDataInterface]:
     return train_test_split(augmented, 0.7)
 
 
-class AugmentedDiffEquation(DiffEquation):
+class AugmentedDiffEquation(ParametrizedEquation):
     def __init__(
         self, neural_eq_components: Sequence[nn.Module], threshold: float = 0.2
     ) -> None:
-        diff_eq_components_net = DiffEquationComponents(neural_eq_components)
-        super().__init__(diff_eq_components_net, 2)
+        diff_eq_components_net = EquationComponents(neural_eq_components)
+        super().__init__(diff_eq_components_net)
         self._threshold = threshold
 
     def forward(self, u: th.Tensor, params: th.Tensor) -> th.Tensor:

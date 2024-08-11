@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 from typing import Sequence
 
 from phynn.data.series.interface import TimeSeriesDataInterface
-from phynn.diff import DiffEquation, simulate
+from phynn.physics import ParametrizedEquation, EquationSimulation
 
 
 TimeSeriesDataSample = tuple[
@@ -64,12 +64,12 @@ class PhyInformedTimeSeriesDataset(Dataset):
     def __init__(
         self,
         time_series_dataset: TimeSeriesDataset,
-        diff_eq: DiffEquation,
+        diff_eq: ParametrizedEquation,
         params: Sequence[float],
     ) -> None:
         super().__init__()
         self._data = time_series_dataset
-        self._diff = diff_eq
+        self._simulation = EquationSimulation(diff_eq)
         self._params = th.Tensor(params)
 
     def __len__(self) -> int:
@@ -81,5 +81,5 @@ class PhyInformedTimeSeriesDataset(Dataset):
 
     def __getitems__(self, indices: Sequence[int]) -> PhyTimeSeriesDataSample:
         starts, results_data, durations = self._data.__getitems__(indices)
-        results_pde = simulate(self._diff, starts, self._params, durations)
+        results_pde = self._simulation(starts, self._params, durations)
         return starts, results_data, results_pde, durations

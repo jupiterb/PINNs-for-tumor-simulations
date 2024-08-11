@@ -1,136 +1,123 @@
-from lightning.pytorch.loggers import WandbLogger
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.utils import make_grid
 
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Sequence
 
 from phynn.models.base import BaseModel, OptimizerParams
-from phynn.diff import DiffEquation, FrozenDiffEquation, simulate
+from phynn.physics import EquationSimulation
 
 
-def _try_log_val_visualization(
-    logger,
-    u_input: th.Tensor,
-    u_target: th.Tensor,
-    u_prediction: th.Tensor,
-) -> None:
-    if isinstance(logger, WandbLogger):
-        u_input_grid = make_grid(u_input, 1)
-        u_target_grid = make_grid(u_target, 1)
-        u_prediction_gird = make_grid(u_prediction, 1)
+@dataclass
+class _StepInfo:
+    loss: th.Tensor
+    u_input: th.Tensor
+    u_target: th.Tensor
+    u_prediction: th.Tensor
 
-        logger.log_image(
-            key="val_visualization",
-            images=[u_input_grid, u_target_grid, u_prediction_gird],
-            caption=["u_input", "u_target", "u_prediction"],
-        )
+    def u_asdict(self) -> dict[str, th.Tensor]:
+        return {
+            "u_input": self.u_input,
+            "u_target": self.u_target,
+            "u_prediction": self.u_prediction,
+        }
 
 
-class DiffEquationModel(BaseModel):
-    def __init__(
-        self, neural_diff_eq: DiffEquation, optimizer_params: OptimizerParams
-    ) -> None:
-        super().__init__(optimizer_params)
-        self.save_hyperparameters(ignore=["neural_diff_eq"])
-        self._diff_eq = neural_diff_eq
-
+class BaseDiffEquationModel(BaseModel, ABC):
     def training_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:  # type: ignore
-        u_input, u_target, params, duration = batch
-        u_prediction = simulate(self._diff_eq, u_input, params, duration)
-        loss = self._loss(u_prediction, u_target)
-        self.log_dict({"loss": loss})
-        return loss
+        info = self._step(batch)
+        self.log_dict({"loss": info.loss})
+        return info.loss
 
     def validation_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:  # type: ignore
-        u_input, u_target, params, duration = batch
-        u_prediction = simulate(self._diff_eq, u_input, params, duration)
-        loss = self._loss(u_prediction, u_target)
-        self.log_dict({"val_loss": loss})
+        info = self._step(batch)
+        self.log_dict({"val_loss": info.loss})
 
         if batch_idx == 0:
-            _try_log_val_visualization(self.logger, u_input, u_target, u_prediction)
+            self._log_visualize("val_visualization", info.u_asdict())
 
-        return loss
+        return info.loss
+
+    @abstractmethod
+    def _step(self, batch: th.Tensor) -> _StepInfo:
+        raise NotImplementedError()
 
     def _loss(self, prediction: th.Tensor, target: th.Tensor) -> th.Tensor:
         return F.mse_loss(prediction, target)
 
 
-class ForwardProblemDiffEquationModel(BaseModel):
+class GeneralDiffEquationModel(BaseDiffEquationModel):
+    def __init__(
+        self, simulation: EquationSimulation, optimizer_params: OptimizerParams
+    ) -> None:
+        super().__init__(optimizer_params)
+        self.save_hyperparameters()
+        self._simulation = simulation
+
+    def _step(self, batch: th.Tensor) -> _StepInfo:
+        u_input, u_target, params, duration = batch
+        u_prediction = self._simulation(u_input, params, duration)
+        loss = self._loss(u_prediction, u_target)
+        return _StepInfo(loss, u_input, u_target, u_prediction)
+
+
+@dataclass
+class _ForwardStepInfo(_StepInfo):
+    u_pde_residuum: th.Tensor
+
+    def u_asdict(self) -> dict[str, th.Tensor]:
+        d = super().u_asdict()
+        d["u_pde_residuum"] = self.u_pde_residuum
+        return d
+
+
+class ForwardProblemDiffEquationModel(BaseDiffEquationModel):
     def __init__(
         self,
-        neural_diff_eq: DiffEquation,
+        simulation: EquationSimulation,
         params: Sequence[float],
         optimizer_params: OptimizerParams,
         pde_residuum_weight: float = 0.5,
     ) -> None:
         super().__init__(optimizer_params)
-
-        self._diff_eq = neural_diff_eq
-
+        self.save_hyperparameters()
+        self._simulation = simulation
         self._params = th.Tensor(params)
         self._num_params = len(params)
-
         self._pde_weight = pde_residuum_weight
 
-    def training_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:  # type: ignore
-        u, u_result_d, u_result_p, duration = batch[0], batch[1], batch[2], batch[3]
-        loss = self._step(u, u_result_d, u_result_p, duration)
-        self.log_dict({"loss": loss})
-        return loss
-
-    def validation_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:  # type: ignore
-        u, u_result_d, u_result_p, duration = batch[0], batch[1], batch[2], batch[3]
-        loss = self._step(u, u_result_d, u_result_p, duration)
-        self.log_dict({"val_loss": loss})
-        return loss
-
-    def _step(
-        self,
-        u: th.Tensor,
-        u_result_d: th.Tensor,
-        u_result_p: th.Tensor,
-        duration: th.Tensor,
-    ) -> th.Tensor:
+    def _step(self, batch: th.Tensor) -> _StepInfo:
         params = self._params.view((1, self._num_params))
-        u_result = simulate(self._diff_eq, u, params, duration)
-        loss_data = F.mse_loss(u_result - u, u_result_d - u)
-        loss_pde = F.mse_loss(u_result - u, u_result_p - u)
-        return (1 - self._pde_weight) * loss_data + self._pde_weight * loss_pde
+        u_input, u_target, u_pde_residuum, duration = batch
+        u_prediction = self._simulation(u_input, params, duration)
+        loss_data = self._loss(u_prediction, u_target)
+        loss_pde = self._loss(u_prediction, u_pde_residuum)
+        loss = (1 - self._pde_weight) * loss_data + self._pde_weight * loss_pde
+        return _ForwardStepInfo(loss, u_input, u_target, u_prediction, u_pde_residuum)
 
 
-class InverseProblemDiffEquationModel(BaseModel):
+class InverseProblemDiffEquationModel(BaseDiffEquationModel):
     def __init__(
-        self, neural_diff_eq: FrozenDiffEquation, optimizer_params: OptimizerParams
+        self,
+        simulation: EquationSimulation,
+        num_params: int,
+        optimizer_params: OptimizerParams,
     ) -> None:
         super().__init__(optimizer_params)
-
-        self._diff_eq = neural_diff_eq
-
-        self._num_params = neural_diff_eq.num_components
-        self._params = nn.Parameter(th.empty((self._num_params,)))
+        self.save_hyperparameters()
+        self._simulation = simulation
+        self._num_params = num_params
+        self._params = nn.Parameter(th.empty((num_params,)))
 
     @property
     def params(self) -> th.Tensor:
         return self._params.detach()
 
-    def training_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:  # type: ignore
-        u, u_result_d, duration = batch[0], batch[1], batch[2]
-        loss = self._step(u, u_result_d, duration)
-        self.log_dict({"loss": loss})
-        return loss
-
-    def validation_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:  # type: ignore
-        u, u_result_d, duration = batch[0], batch[1], batch[2]
-        loss = self._step(u, u_result_d, duration)
-        self.log_dict({"val_loss": loss})
-        return loss
-
-    def _step(
-        self, u: th.Tensor, u_result: th.Tensor, duration: th.Tensor
-    ) -> th.Tensor:
+    def _step(self, batch: th.Tensor) -> _StepInfo:
         params = self._params.view((1, self._num_params))
-        u_result_predicted = simulate(self._diff_eq, u, params, duration)
-        return F.mse_loss(u_result_predicted - u, u_result - u)
+        u_input, u_target, duration = batch
+        u_prediction = self._simulation(u_input, params, duration)
+        loss = self._loss(u_prediction, u_target)
+        return _StepInfo(loss, u_input, u_target, u_prediction)

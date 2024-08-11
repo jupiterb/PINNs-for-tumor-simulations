@@ -1,7 +1,5 @@
-from lightning.pytorch.loggers import WandbLogger
 import torch as th
 import torch.nn.functional as F
-from torchvision.utils import make_grid
 
 from dataclasses import dataclass
 
@@ -43,15 +41,22 @@ class VAEModel(BaseModel):
 
     def validation_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:  # type: ignore
         x = batch
-        info, reconstructions = self._step(x)
+        info, x_hat = self._step(x)
         self.log_dict({"val_" + name: value for name, value in info.asdict().items()})
 
         if batch_idx == 0:
-            self._epochs += 1
-            if self._epochs % 10 == 0:
-                self._try_log_in_out_visualization(x, reconstructions)
+            self._maybe_log_in_vs_out(x, x_hat)
 
         return info.loss
+
+    def _maybe_log_in_vs_out(self, x: th.Tensor, x_hat: th.Tensor) -> None:
+        if self._epochs % 10 == 0:
+            self._log_visualize(
+                "in_vs_out_visualization",
+                {"inputs": x, "reconstructions": x_hat},
+            )
+
+        self._epochs += 1
 
     def _step(self, x: th.Tensor) -> tuple[_VAELossInfo, _Reconstructions]:
         mu, log_var = self._vae.encoder(x)
@@ -73,16 +78,3 @@ class VAEModel(BaseModel):
             * self._kld_weight
             * th.mean(th.sum(1 + log_var - var - mu**2, dim=1), dim=0)
         )
-
-    def _try_log_in_out_visualization(
-        self, inputs: th.Tensor, reconstructions: th.Tensor
-    ) -> None:
-        if isinstance(self.logger, WandbLogger):
-            reconstructions[reconstructions < 0.1] = 0
-            inputs_grid = make_grid(inputs, 8)
-            reconstructions_grid = make_grid(reconstructions, 8)
-            self.logger.log_image(
-                key="in_vs_out_visualization",
-                images=[inputs_grid, reconstructions_grid],
-                caption=["inputs", "reconstructions"],
-            )
