@@ -1,11 +1,10 @@
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 import torch as th
-from torch import optim
+import torch.optim as optim
 from torchvision.utils import make_grid
 
 from dataclasses import dataclass
-
 from typing import Type
 
 
