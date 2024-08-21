@@ -1,30 +1,49 @@
 from __future__ import annotations
 
 import torch as th
-from torch import nn
+import torch.nn as nn
+
+from dataclasses import dataclass
 from typing import Sequence
 
-from phynn.nn.base import (
-    SequentialNetCreator,
-    SequentialNetParams,
-    SpaceParams,
-    BlockParams,
-    get_factory,
-)
-from phynn.nn.fc import FC
+from phynn.nn.conv import ConvNet, ConvNetParams, ConvNetCommonParams
+from phynn.nn.fc import FC, FCParams
 
 
-class AutoEncoder(nn.Module):
-    def __init__(
-        self,
-        in_shape: Sequence[int],
-        encoder: nn.Module,
-        decoder: nn.Module,
-    ) -> None:
-        super(AutoEncoder, self).__init__()
-        self._in_shape = in_shape
-        self._encoder = encoder
-        self._decoder = decoder
+@dataclass
+class ConvAutoEncoderParams:
+    in_shape: Sequence[int]
+    conv_encoder_params: ConvNetParams
+    fc_encoder_params: FCParams
+
+
+class ConvAutoEncoder(nn.Module):
+    def __init__(self, params: ConvAutoEncoderParams) -> None:
+        super(ConvAutoEncoder, self).__init__()
+
+        conv_encoder = ConvNet(params.conv_encoder_params)
+        fc_encoder = FC(params.fc_encoder_params)
+        self._encoder = nn.Sequential(conv_encoder, nn.Flatten(), fc_encoder)
+
+        with th.no_grad():
+            pre_flatten_shape = conv_encoder(th.zeros((1, *params.in_shape))).shape[1:]
+
+        fc_decoder_params = FCParams(
+            list(reversed(params.fc_encoder_params.features)),
+            list(reversed(params.fc_encoder_params.activations)),
+        )
+        conv_decoder_params = ConvNetParams(
+            list(reversed(params.conv_encoder_params.channels)),
+            list(reversed(params.conv_encoder_params.blocks)),
+            ConvNetCommonParams(True, True, True),
+        )
+
+        fc_decoder = FC(fc_decoder_params)
+        unflatten = nn.Unflatten(1, pre_flatten_shape)
+        conv_decoder = ConvNet(conv_decoder_params)
+        self._decoder = nn.Sequential(fc_decoder, unflatten, conv_decoder)
+
+        self._in_shape = params.in_shape
 
     @property
     def in_shape(self) -> Sequence[int]:
@@ -38,49 +57,15 @@ class AutoEncoder(nn.Module):
     def decoder(self) -> nn.Module:
         return self._decoder
 
-    def add_inner(self, inner: AutoEncoder) -> AutoEncoder:
-        self._encoder = nn.Sequential(self._encoder, inner.encoder)
-        self._decoder = nn.Sequential(inner.decoder, self._decoder)
-        return self
-
-    def flatten(self) -> AutoEncoder:
-        with th.no_grad():
-            latent_shape = self._encoder(th.zeros((1, *self._in_shape))).shape[1:]
-
-        self._encoder = nn.Sequential(self._encoder, nn.Flatten())
-        self._decoder = nn.Sequential(nn.Unflatten(1, latent_shape), self._decoder)
-
-        return self
-
     def forward(self, x: th.Tensor) -> th.Tensor:
         latent = self._encoder(x)
         return self._decoder(latent)
 
 
-class AutoEncoderCreator(SequentialNetCreator[SpaceParams, BlockParams]):
-    def __init__(
-        self,
-        in_shape: Sequence[int],
-        encoder_creator: SequentialNetCreator[SpaceParams, BlockParams],
-        decoder_creator: SequentialNetCreator[SpaceParams, BlockParams],
-    ) -> None:
-        self._in_shape = in_shape
-        self._encoder_creator = encoder_creator
-        self._decoder_creator = decoder_creator
-
-    def create(
-        self, params: SequentialNetParams[SpaceParams, BlockParams]
-    ) -> AutoEncoder:
-        decoder_factory = get_factory(self._decoder_creator)
-        decoder_params = decoder_factory.init(params.in_space)
-
-        for space, block in params:
-            decoder_params = decoder_factory.layer(space, block) + decoder_params
-
-        encoder = self._encoder_creator.create(params)
-        decoder = self._decoder_creator.create(decoder_params)
-
-        return AutoEncoder(self._in_shape, encoder, decoder)
+@dataclass
+class VariationalAutoEncoderParams:
+    conv_ae_params: ConvAutoEncoderParams
+    latent_size: int
 
 
 class _VariationalEncoder(nn.Module):
@@ -102,12 +87,8 @@ class _VariationalDecoder(nn.Module):
         self, decoder: nn.Module, pre_latent_size: int, latent_size: int
     ) -> None:
         super(_VariationalDecoder, self).__init__()
-        fc_creator = FC()
-        fc_factory = get_factory(fc_creator)
-        params = fc_factory.init(latent_size) + fc_factory.layer(
-            pre_latent_size, nn.LeakyReLU
-        )
-        pre_decoder_fc = fc_creator.create(params)
+        pre_decoder_fc_params = FCParams([latent_size, pre_latent_size], [nn.LeakyReLU])
+        pre_decoder_fc = FC(pre_decoder_fc_params)
         self._decoder = nn.Sequential(pre_decoder_fc, decoder)
 
     def forward(self, mu: th.Tensor, log_var: th.Tensor) -> th.Tensor:
@@ -116,25 +97,19 @@ class _VariationalDecoder(nn.Module):
         return self._decoder(latent)
 
 
-class VariationalAutoEncoder(AutoEncoder):
-    def __init__(
-        self,
-        in_shape: Sequence[int],
-        encoder: nn.Module,
-        decoder: nn.Module,
-        latent_size: int,
-    ) -> None:
-        with th.no_grad():
-            pre_latent_shape = encoder(th.zeros((1, *in_shape))).shape[1:]
+class VariationalAutoEncoder(ConvAutoEncoder):
+    def __init__(self, params: VariationalAutoEncoderParams) -> None:
+        super().__init__(params.conv_ae_params)
 
-        if len(pre_latent_shape) > 1:
-            raise ValueError(
-                f"Encoder output should be flat, but is {pre_latent_shape}."
-            )
+        pre_latent_size = params.conv_ae_params.fc_encoder_params.features[-1]
 
-        pre_latent_size = pre_latent_shape[0]
+        self._encoder = _VariationalEncoder(
+            self._encoder, pre_latent_size, params.latent_size
+        )
+        self._decoder = _VariationalDecoder(
+            self._decoder, pre_latent_size, params.latent_size
+        )
 
-        encoder = _VariationalEncoder(encoder, pre_latent_size, latent_size)
-        decoder = _VariationalDecoder(decoder, pre_latent_size, latent_size)
-
-        super().__init__(in_shape, encoder, decoder)
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        mu, log_var = self._encoder(x)
+        return self.decoder(mu, log_var)

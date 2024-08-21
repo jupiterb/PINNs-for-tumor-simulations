@@ -1,13 +1,19 @@
+import torch as th
 import torch.nn as nn
 
 from dataclasses import dataclass
-from typing import Type
-
-from phynn.nn.base import SequentialNetCreator, SequentialNetParams
+from typing import Sequence, Type
 
 
 @dataclass
-class ConvBlockParams:
+class ConvNetCommonParams:
+    transpose: bool = False
+    upsample: bool = False
+    rescale_on_begin: bool = False
+
+
+@dataclass
+class ConvNetBlockParams:
     kernel_size: int = 3
     activation: Type[nn.Module] = nn.LeakyReLU
     batch_norm: bool = True
@@ -18,62 +24,62 @@ class ConvBlockParams:
 
 
 @dataclass
-class _ConvType:
-    transpose: bool
-    upsample: bool
-    rescale_on_begin: bool
+class ConvNetParams:
+    channels: Sequence[int]
+    blocks: Sequence[ConvNetBlockParams]
+    common: ConvNetCommonParams
 
 
-class Conv(SequentialNetCreator[int, ConvBlockParams]):
-    def __init__(
-        self,
-        transpose: bool = False,
-        upsample: bool = False,
-        rescale_on_begin: bool = False,
-    ) -> None:
-        self._conv_type = _ConvType(transpose, upsample, rescale_on_begin)
+def ConvBlock(
+    in_channels: int,
+    out_channels: int,
+    block_params: ConvNetBlockParams,
+    common_params: ConvNetCommonParams,
+) -> nn.Sequential:
+    b = block_params
+    c = common_params
 
-    def create(self, params: SequentialNetParams[int, ConvBlockParams]) -> nn.Module:
-        conv = nn.Sequential()
-        in_channels = params.in_space
+    padding = (b.kernel_size - 1) // 2 if b.same_padding else 1
+    conv_cls = nn.ConvTranspose2d if c.transpose else nn.Conv2d
 
-        for out_channels, block_params in params:
-            conv += self._create_block(in_channels, out_channels, block_params)
+    block = nn.Sequential()
 
-        return conv
+    def rescale():
+        if c.upsample:
+            block.append(nn.Upsample(scale_factor=b.rescale, mode="bilinear"))
+        else:
+            block.append(nn.MaxPool2d(kernel_size=b.rescale, stride=b.rescale))
 
-    def _create_block(
-        self, in_channels: int, out_channels: int, block_params: ConvBlockParams
-    ) -> nn.Sequential:
-        d = block_params
-        t = self._conv_type
+    if b.rescale > 1 and c.rescale_on_begin:
+        rescale()
 
-        padding = (d.kernel_size - 1) // 2 if d.same_padding else 1
-        conv_cls = nn.ConvTranspose2d if t.transpose else nn.Conv2d
+    if b.dropout > 0:
+        block.append(nn.Dropout(b.dropout))
 
-        block = nn.Sequential()
+    conv = conv_cls(in_channels, out_channels, b.kernel_size, b.stride, padding)
+    block.append(conv)
 
-        def rescale():
-            if t.upsample:
-                block.append(nn.Upsample(scale_factor=d.rescale, mode="bilinear"))
-            else:
-                block.append(nn.MaxPool2d(kernel_size=d.rescale, stride=d.rescale))
+    if b.batch_norm:
+        block.append(nn.BatchNorm2d(out_channels))
 
-        if d.rescale > 1 and t.rescale_on_begin:
-            rescale()
+    block.append(b.activation())
 
-        if d.dropout > 0:
-            block.append(nn.Dropout(d.dropout))
+    if b.rescale > 1 and not c.rescale_on_begin:
+        rescale()
 
-        conv = conv_cls(in_channels, out_channels, d.kernel_size, d.stride, padding)
-        block.append(conv)
+    return block
 
-        if d.batch_norm:
-            block.append(nn.BatchNorm2d(out_channels))
 
-        block.append(d.activation())
+class ConvNet(nn.Module):
+    def __init__(self, params: ConvNetParams) -> None:
+        super(ConvNet, self).__init__()
+        self._conv = nn.Sequential()
+        in_channels = params.channels[0]
 
-        if d.rescale > 1 and not t.rescale_on_begin:
-            rescale()
+        for out_channels, block_params in zip(params.channels[1:], params.blocks):
+            block = ConvBlock(in_channels, out_channels, block_params, params.common)
+            self._conv += block
+            in_channels = out_channels
 
-        return block
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return self._conv(x)

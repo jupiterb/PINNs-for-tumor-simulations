@@ -1,18 +1,23 @@
-from __future__ import annotations
-
 import torch as th
 import torch.nn as nn
 
 from dataclasses import dataclass
-from typing import Generic, Iterator
+from typing import Sequence, Type
 
-from phynn.nn.base import (
-    SequentialNetCreator,
-    SequentialNetParams,
-    SpaceParams,
-    BlockParams,
-    get_factory,
+from phynn.nn.conv import (
+    ConvNet,
+    ConvNetParams,
+    ConvNetBlockParams,
+    ConvNetCommonParams,
 )
+
+
+@dataclass
+class UNetParams:
+    in_channels: int
+    out_channels: int
+    out_activation: Type[nn.Module]
+    levels_channels: Sequence[int]
 
 
 class UNetLevel(nn.Module):
@@ -31,73 +36,89 @@ class UNetLevel(nn.Module):
         return self._decoder(x_cat)
 
 
-@dataclass
-class UNetLevelParams(Generic[SpaceParams, BlockParams]):
-    concat_space_params: SpaceParams
-    block_params: BlockParams
+class UNet(nn.Module):
+    def __init__(self, params: UNetParams) -> None:
+        if len(params.levels_channels) < 2:
+            raise ValueError(
+                "UNet should have at least two levels, so len(levels_channels) should be >= 2."
+            )
 
+        super(UNet, self).__init__()
 
-MaybeUNetLevelParams = UNetLevelParams[SpaceParams, BlockParams] | BlockParams
+        unet_in_params = ConvNetParams(
+            [params.in_channels, params.levels_channels[0], params.levels_channels[0]],
+            [ConvNetBlockParams()],
+            ConvNetCommonParams(),
+        )
+        unet_in_conv = ConvNet(unet_in_params)
 
+        unet_out_params = ConvNetParams(
+            [
+                params.levels_channels[0] + params.levels_channels[0],
+                params.levels_channels[0],
+                params.levels_channels[0],
+                params.out_channels,
+            ],
+            [
+                ConvNetBlockParams(),
+                ConvNetBlockParams(),
+                ConvNetBlockParams(kernel_size=1, activation=params.out_activation),
+            ],
+            ConvNetCommonParams(),
+        )
+        unet_out_conv = ConvNet(unet_out_params)
 
-class UNet(
-    SequentialNetCreator[SpaceParams, MaybeUNetLevelParams[SpaceParams, BlockParams]]
-):
-    def __init__(
-        self,
-        encoder_creator: SequentialNetCreator[SpaceParams, BlockParams],
-        decoder_creator: SequentialNetCreator[SpaceParams, BlockParams],
-    ) -> None:
-        self._encoder_creator = encoder_creator
-        self._decoder_creator = decoder_creator
+        sublevel = UNet._build_level(params.levels_channels)
 
-    def create(
-        self,
-        params: SequentialNetParams[
-            SpaceParams, MaybeUNetLevelParams[SpaceParams, BlockParams]
-        ],
-    ) -> nn.Module:
-        return self._create_level(params.in_space, params.__iter__())
+        self._unet = UNetLevel(unet_in_conv, unet_out_conv, sublevel)
 
-    def _create_level(
-        self,
-        in_space: SpaceParams,
-        params_iter: Iterator[
-            tuple[SpaceParams, MaybeUNetLevelParams[SpaceParams, BlockParams]]
-        ],
-    ) -> nn.Module:
-        factory = get_factory(self._encoder_creator)
-        encoder_params = factory.init(in_space)
-        decoder_params = factory.init(in_space)
-        sublevel = None
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return self._unet(x)
 
-        while True:
-            try:
-                out_space, unet_block_params = next(params_iter)
-
-                match unet_block_params:
-                    case UNetLevelParams(concat_space_params, block_params):
-                        encoder_params += factory.layer(out_space, block_params)
-                        decoder_params = (
-                            factory.layer(concat_space_params, block_params)
-                            + decoder_params
-                        )
-                        sublevel = self._create_level(concat_space_params, params_iter)
-                    case block_params:
-                        encoder_params += factory.layer(out_space, block_params)
-                        decoder_params = (
-                            factory.layer(out_space, block_params) + decoder_params
-                        )
-
-                in_space = out_space
-
-            except StopIteration:
-                break
-
-        encoder = self._encoder_creator.create(encoder_params)
-        decoder = self._decoder_creator.create(decoder_params)
-
-        if sublevel is None:
-            return nn.Sequential(encoder, decoder)
+    @staticmethod
+    def _build_level(levels_channels: Sequence[int]) -> nn.Module:
+        if len(levels_channels) > 2:
+            return UNet._build_unet_level(levels_channels)
         else:
-            return UNetLevel(encoder, decoder, sublevel)
+            return UNet._build_bridge_level(*levels_channels)
+
+    @staticmethod
+    def _build_unet_level(levels_channels: Sequence[int]) -> nn.Module:
+        in_channels, level_channels = levels_channels[0], levels_channels[1]
+        concat_channels = 2 * level_channels
+
+        encoder_params = ConvNetParams(
+            [in_channels, level_channels, level_channels],
+            [ConvNetBlockParams(rescale=2), ConvNetBlockParams()],
+            ConvNetCommonParams(rescale_on_begin=True),
+        )
+        encoder = ConvNet(encoder_params)
+
+        decoder_params = ConvNetParams(
+            [concat_channels, level_channels, in_channels],
+            [ConvNetBlockParams(), ConvNetBlockParams(rescale=2)],
+            ConvNetCommonParams(upsample=True),
+        )
+        decoder = ConvNet(decoder_params)
+
+        sublevel = UNet._build_level(levels_channels[1:])
+
+        return UNetLevel(encoder, decoder, sublevel)
+
+    @staticmethod
+    def _build_bridge_level(in_channels: int, level_channels: int) -> nn.Module:
+        encoder_params = ConvNetParams(
+            [in_channels, level_channels],
+            [ConvNetBlockParams(rescale=2)],
+            ConvNetCommonParams(rescale_on_begin=True),
+        )
+        encoder = ConvNet(encoder_params)
+
+        decoder_params = ConvNetParams(
+            [level_channels, in_channels],
+            [ConvNetBlockParams(rescale=2)],
+            ConvNetCommonParams(upsample=True),
+        )
+        decoder = ConvNet(decoder_params)
+
+        return nn.Sequential(encoder, decoder)
