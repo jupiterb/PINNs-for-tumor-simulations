@@ -1,6 +1,6 @@
 from phynn.physics.equation import (
     EquationComponents,
-    ParametrizedEquation,
-    FrozenParametrizedEquation,
-    EquationSimulation,
+    LinearEquation,
+    FrozenLinearEquation,
 )
+from phynn.physics.simulation import Simulation, DiscreteSimulation
