@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 
 
-class DataKey(Enum, str):
+class DataKey(str, Enum):
     IMAGES = "images"
     TIMES = "times"
     PARAMS = "params"

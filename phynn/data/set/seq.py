@@ -1,15 +1,15 @@
 import torch as th
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 from typing import Callable, Sequence
 
 from phynn.data.interface import DataInterfaceFactory, DataKey
+from phynn.data.set.base import FactoryBasedDataset
 from phynn.data.export import DataExportManager
 
 
-class SequenceDataset(Dataset):
+class SequenceDataset(FactoryBasedDataset):
     def __init__(self, factory: DataInterfaceFactory) -> None:
-        super().__init__()
         self._images = factory.get_flat_interface(DataKey.IMAGES)
         self._times = factory.get_flat_interface(DataKey.TIMES)
 
@@ -20,9 +20,8 @@ class SequenceDataset(Dataset):
         return self._images.get(index), self._times.get(index)
 
 
-class SequenceSamplesDataset(Dataset):
+class SequenceSamplesDataset(FactoryBasedDataset):
     def __init__(self, factory: DataInterfaceFactory) -> None:
-        super().__init__()
         self._images = factory.get_sequence_interface(DataKey.IMAGES)
         self._times = factory.get_sequence_interface(DataKey.TIMES)
 

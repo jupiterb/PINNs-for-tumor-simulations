@@ -6,7 +6,7 @@ from typing import Sequence
 from phynn.data.interface import DataInterfaceFactory, DataKey
 from phynn.data.export import DataExportManager
 from phynn.data.set.seq import SequenceSamplesDataset
-from phynn.physics import EquationSimulation
+from phynn.physics import Simulation
 
 
 class PhysicsResiduumsSamplesDataset(SequenceSamplesDataset):
@@ -21,7 +21,7 @@ class PhysicsResiduumsSamplesDataset(SequenceSamplesDataset):
 def create_phy_residuums(
     export: DataExportManager,
     data: SequenceSamplesDataset,
-    simulation: EquationSimulation,
+    simulation: Simulation,
     params: Sequence[float],
     batch_size=64,
 ) -> None:

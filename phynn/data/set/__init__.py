@@ -1,4 +1,10 @@
-from phynn.data.set.img import ImagesDataset, preprocess_img
+from phynn.data.set.base import FactoryBasedDataset
+from phynn.data.set.img import (
+    ImagesDataset,
+    FlatImagesDataset,
+    SequenceImagesDataset,
+    preprocess_img,
+)
 from phynn.data.set.res import (
     PhysicsResiduumsSamplesDataset,
     create_phy_residuums,
